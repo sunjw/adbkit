@@ -1,6 +1,6 @@
 import * as Fs from 'fs';
 
-export default class Stats extends Fs.Stats {
+export default class Stats extends Fs.BigIntStats {
   // The following constant were extracted from `man 2 stat` on Ubuntu 12.10.
   public static S_IFMT = 0o170000; // bit mask for the file type bit fields
 
@@ -36,7 +36,7 @@ export default class Stats extends Fs.Stats {
 
   public static S_IRGRP = 0o0040; // group has read permission
 
-  constructor(mode: number, size: number, mtime: number) {
+  constructor(mode: bigint, size: bigint, mtime: number) {
     super();
     this.mode = mode;
     this.size = size;
