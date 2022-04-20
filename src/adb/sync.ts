@@ -72,19 +72,19 @@ export default class Sync extends EventEmitter {
         switch (reply) {
           case Protocol.STA2:
             return this.parser.readBytes(12).then((stat) => {
-              const mode = stat.readUInt32LE(0);
-              const size = stat.readUInt32LE(4);
-              const mtime = stat.readUInt32LE(8);
+              const mode = stat.readUInt32LE(20);
+              const size = stat.readBigUInt64LE(36);
+              const mtime = stat.readBigUInt64LE(52);
               if (mode === 0) {
                 return this._enoent(path);
               } else {
-                return new Stats(mode, BigInt(size), mtime);
+                return new Stats(mode, BigInt(size), Number(mtime));
               }
             });
           case Protocol.FAIL:
             return this._readError();
           default:
-            return this.parser.unexpected(reply, 'STAT or FAIL');
+            return this.parser.unexpected(reply, 'STA2 or FAIL');
         }
       })
       .nodeify(callback);
