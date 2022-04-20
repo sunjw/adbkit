@@ -52,7 +52,33 @@ export default class Sync extends EventEmitter {
               if (mode === 0) {
                 return this._enoent(path);
               } else {
-                return new Stats(mode, size, mtime);
+                return new Stats(BigInt(mode), BigInt(size), mtime);
+              }
+            });
+          case Protocol.FAIL:
+            return this._readError();
+          default:
+            return this.parser.unexpected(reply, 'STAT or FAIL');
+        }
+      })
+      .nodeify(callback);
+  }
+
+  public sta2(path: string, callback?: Callback<Stats>): Bluebird<Stats> {
+    this._sendCommandWithArg(Protocol.STA2, path);
+    return this.parser
+      .readAscii(4)
+      .then((reply) => {
+        switch (reply) {
+          case Protocol.STA2:
+            return this.parser.readBytes(12).then((stat) => {
+              const mode = stat.readUInt32LE(0);
+              const size = stat.readUInt32LE(4);
+              const mtime = stat.readUInt32LE(8);
+              if (mode === 0) {
+                return this._enoent(path);
+              } else {
+                return new Stats(BigInt(mode), BigInt(size), mtime);
               }
             });
           case Protocol.FAIL:
