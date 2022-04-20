@@ -71,7 +71,7 @@ export default class Sync extends EventEmitter {
       .then((reply) => {
         switch (reply) {
           case Protocol.STA2:
-            return this.parser.readBytes(12).then((stat) => {
+            return this.parser.readBytes(68).then((stat) => {
               const mode = stat.readUInt32LE(20);
               const size = stat.readBigUInt64LE(36);
               const mtime = stat.readBigUInt64LE(52);
