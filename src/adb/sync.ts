@@ -52,7 +52,7 @@ export default class Sync extends EventEmitter {
               if (mode === 0) {
                 return this._enoent(path);
               } else {
-                return new Stats(BigInt(mode), BigInt(size), mtime);
+                return new Stats(mode, BigInt(size), mtime);
               }
             });
           case Protocol.FAIL:
@@ -78,7 +78,7 @@ export default class Sync extends EventEmitter {
               if (mode === 0) {
                 return this._enoent(path);
               } else {
-                return new Stats(BigInt(mode), BigInt(size), mtime);
+                return new Stats(mode, BigInt(size), mtime);
               }
             });
           case Protocol.FAIL:
