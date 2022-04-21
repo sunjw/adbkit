@@ -36,13 +36,13 @@ export default class Stats extends Fs.Stats {
 
   public static S_IRGRP = 0o0040; // group has read permission
 
-  size64: bigint;
+  sizeBig: bigint;
 
-  constructor(mode: number, size64: bigint, mtime: number) {
+  constructor(mode: number, sizeBig: bigint, mtime: number) {
     super();
     this.mode = Number(mode);
-    this.size = Number(size64);
-    this.size64 = size64;
+    this.size = Number(sizeBig);
+    this.sizeBig = sizeBig;
     this.mtime = new Date(mtime * 1000);
   }
 }
