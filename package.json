@@ -1,6 +1,6 @@
 {
   "name": "@sunjw8888/adbkit",
-  "version": "3.2.5",
+  "version": "3.2.6",
   "description": "A Typescript client for the Android Debug Bridge.",
   "keywords": [
     "adb",
@@ -22,7 +22,8 @@
     "email": "contact@devicefarmer.com",
     "url": "https://devicefarmer.com/"
   },
-  "contributors": [{
+  "contributors": [
+    {
       "name": "uriel chemouni",
       "email": "uchemouni@gmail.com",
       "url": "https://urielch.github.io/urielch/"
