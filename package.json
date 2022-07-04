@@ -14,7 +14,7 @@
     "adbkit": "./bin/adbkit"
   },
   "bugs": {
-    "url": "https://github.com/devicefarmer/adbkit/issues"
+    "url": "https://github.com/sunjw/adbkit/issues"
   },
   "license": "Apache-2.0",
   "author": {
@@ -27,13 +27,18 @@
       "name": "uriel chemouni",
       "email": "uchemouni@gmail.com",
       "url": "https://urielch.github.io/urielch/"
+    },
+    {
+    "name": "Sun Junwen",
+    "email": "sunjw8888@gmail.com",
+    "url": "https://github.com/sunjw"
     }
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/devicefarmer/adbkit.git"
+    "url": "https://github.com/sunjw/adbkit.git"
   },
   "scripts": {
     "clean": "rimraf dist index.d.ts index.js",
