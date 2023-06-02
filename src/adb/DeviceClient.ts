@@ -49,11 +49,10 @@ import Reverse from '../Reverse';
 import StartActivityOptions from '../StartActivityOptions';
 import StartServiceOptions from '../StartServiceOptions';
 import Bluebird from 'bluebird';
-import { Duplex } from 'stream';
+import { Duplex, Readable } from 'stream';
 import Stats from './sync/stats';
 import Entry from './sync/entry';
 import PushTransfer from './sync/pushtransfer';
-import { ReadStream } from 'fs';
 import PullTransfer from './sync/pulltransfer';
 import { Properties } from '../Properties';
 import { Features } from '../Features';
@@ -331,7 +330,7 @@ export default class DeviceClient {
 
      * @param port The port number to connect to.
      * @param host Optional. The host to connect to. Allegedly this is supposed to establish a connection to the given host from the device, but we have not been able to get it to work at all. Skip the host and everything works great.
-     * 
+     *
      * @returns The TCP connection (i.e. [`net.Socket`][node-net]). Read and write as you please. Call `conn.end()` to end the connection.
      */
   public openTcp(port: number, host?: string): Bluebird<Duplex> {
@@ -424,14 +423,14 @@ export default class DeviceClient {
    * @param apk When `String`, interpreted as a path to an APK file. When [`Stream`][node-stream], installs directly from the stream, which must be a valid APK.
    * @returns true
    */
-  public install(apk: string | ReadStream): Bluebird<boolean> {
+  public install(apk: string | Readable): Bluebird<boolean> {
     const temp = Sync.temp(typeof apk === 'string' ? apk : '_stream.apk');
     return this.push(apk, temp).then((transfer) => {
       let endListener: () => void;
       let errorListener: (err: Error) => void;
       return new Bluebird<boolean>((resolve, reject) => {
         errorListener = (err: Error) => reject(err);
-        endListener = () => this.installRemote(temp).then((value: boolean) => resolve(value));
+        endListener = () => this.installRemote(temp).then((value: boolean) => resolve(value)).catch(reject);
         transfer.on('error', errorListener);
         transfer.on('end', endListener);
       }).finally(() => {
@@ -453,8 +452,9 @@ export default class DeviceClient {
     return this.transport().then((transport) => {
       return new InstallCommand(transport)
         .execute(apk)
-        .then(() => this.shell(['rm', '-f', apk]))
-        .then((stream) => new Parser(stream).readAll())
+        .finally(() => {
+          return this.shell(['rm', '-f', apk]).then((stream) => new Parser(stream).readAll());
+        })
         .then(() => true);
     });
   }
@@ -525,7 +525,7 @@ export default class DeviceClient {
      * Retrieves information about the given path.
      *
      * @param path The path.
-     * 
+     *
      * @returns An [`fs.Stats`][node-fs-stats] instance. While the `stats.is*` methods are available, only the following properties are supported:
         -   **mode** The raw mode.
         -   **size** The file size.
@@ -563,7 +563,7 @@ export default class DeviceClient {
    * @param path See `sync.push()` for details.
    * @param mode See `sync.push()` for details.
    */
-  public push(contents: string | ReadStream, path: string, mode?: number): Bluebird<PushTransfer> {
+  public push(contents: string | Readable, path: string, mode?: number): Bluebird<PushTransfer> {
     return this.syncService().then((sync) => sync.push(contents, path, mode).on('end', () => sync.end()));
   }
 
