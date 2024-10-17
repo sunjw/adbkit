@@ -1,6 +1,6 @@
 {
   "name": "@sunjw8888/adbkit",
-  "version": "3.3.11",
+  "version": "3.3.13",
   "description": "A Typescript client for the Android Debug Bridge.",
   "keywords": [
     "adb",
@@ -35,6 +35,7 @@
     }
   ],
   "main": "./dist/index.js",
+  "files": ["./dist/index.*", "./dist/src"],
   "types": "./dist/index.d.ts",
   "repository": {
     "type": "git",
