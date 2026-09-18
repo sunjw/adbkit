@@ -166,15 +166,7 @@ export default class Sync extends EventEmitter {
       let endListener: () => void;
       let errorListener: (err: Error) => void;
 
-      let resolver = Bluebird.defer();
-      const writer = Bluebird.resolve();
-      endListener = () => {
-        writer.then(() => {
-          this._sendCommandWithLength(Protocol.DONE, timeStamp);
-          return resolver.resolve();
-        });
-      };
-      stream.on('end', endListener);
+      const resolver = Bluebird.defer();
       const waitForDrain = () => {
         const drainResolver = Bluebird.defer();
         const drainListener = () => {
@@ -186,21 +178,32 @@ export default class Sync extends EventEmitter {
         });
       };
       const track = () => transfer.pop();
+      let draining = false;
       const writeNext = () => {
+        if (draining) {
+          return;
+        }
         let chunk: Buffer;
-        if ((chunk = stream.read(DATA_MAX_LENGTH) || stream.read())) {
+        while ((chunk = stream.read(DATA_MAX_LENGTH) || stream.read())) {
           this._sendCommandWithLength(Protocol.DATA, chunk.length);
           transfer.push(chunk.length);
-          if (this.connection.write(chunk, track)) {
-            return writeNext();
-          } else {
-            return waitForDrain().then(writeNext);
+          if (!this.connection.write(chunk, track)) {
+            draining = true;
+            waitForDrain().then(() => {
+              draining = false;
+              writeNext();
+            });
+            return;
           }
-        } else {
-          return Bluebird.resolve();
         }
+        // Ran out of buffered data; the next 'readable' will resume the pump.
       };
-      readableListener = () => writer.then(writeNext);
+      endListener = () => {
+        this._sendCommandWithLength(Protocol.DONE, timeStamp);
+        resolver.resolve();
+      };
+      stream.on('end', endListener);
+      readableListener = () => writeNext();
       stream.on('readable', readableListener);
       errorListener = (err) => resolver.reject(err);
       stream.on('error', errorListener);
@@ -215,7 +218,6 @@ export default class Sync extends EventEmitter {
         stream.removeListener('readable', readableListener);
         stream.removeListener('error', errorListener);
         this.connection.removeListener('error', connErrorListener);
-        return writer.cancel();
       });
     };
     const readReply = () => {
