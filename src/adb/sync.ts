@@ -272,32 +272,54 @@ export default class Sync extends EventEmitter {
         return retEnd;
       }
     };
-    const readNext = () => {
-      return this.parser.readAscii(4).then((reply) => {
-        switch (reply) {
-          case Protocol.DATA:
-            return this.parser.readBytes(4).then((lengthData) => {
-              const length = lengthData.readUInt32LE(0);
-              return this.parser.readByteFlow(length, transfer).then(() => {
-                return readNext()
-              });
-            });
-          case Protocol.DONE:
-            return this.parser.readBytes(4).then(function () {
-              return readEnd();
-            });
-          case Protocol.FAIL:
-            return readEnd(() => {
-              return this._readError();
-            });
-          default:
-            return readEnd(() => {
-              return this.parser.unexpected(reply, 'DATA, DONE or FAIL');
-            });
+    const reader = new Bluebird<void>((resolve, reject, onCancel) => {
+      let cancelled = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let current: Bluebird<any> | null = null;
+      onCancel(() => {
+        cancelled = true;
+        if (current) {
+          current.cancel();
         }
       });
-    };
-    const reader = readNext()
+      const step = (): void => {
+        if (cancelled) {
+          return;
+        }
+        current = this.parser.readAscii(4).then((reply) => {
+          switch (reply) {
+            case Protocol.DATA:
+              return this.parser.readBytes(4).then((lengthData) => {
+                const length = lengthData.readUInt32LE(0);
+                // Resolve to `true` to signal "keep reading".
+                return this.parser.readByteFlow(length, transfer).then(() => true);
+              });
+            case Protocol.DONE:
+              return this.parser.readBytes(4).then(function () {
+                readEnd();
+                // Resolve to `false` to signal "stop".
+                return false;
+              });
+            case Protocol.FAIL:
+              return readEnd(() => {
+                return this._readError();
+              });
+            default:
+              return readEnd(() => {
+                return this.parser.unexpected(reply, 'DATA, DONE or FAIL');
+              });
+          }
+        });
+        current.then((again) => {
+          if (again) {
+            step();
+          } else {
+            resolve();
+          }
+        }, reject);
+      };
+      step();
+    })
       .catch(Bluebird.CancellationError, () => this.connection.end())
       .catch((err: Error) => transfer.emit('error', err));
     const cancelListener = () => reader.cancel();
