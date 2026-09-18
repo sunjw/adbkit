@@ -176,12 +176,12 @@ export default class Sync extends EventEmitter {
       };
       stream.on('end', endListener);
       const waitForDrain = () => {
-        resolver = Bluebird.defer();
+        const drainResolver = Bluebird.defer();
         const drainListener = () => {
-          resolver.resolve();
+          drainResolver.resolve();
         };
         this.connection.on('drain', drainListener);
-        return resolver.promise.finally(() => {
+        return drainResolver.promise.finally(() => {
           return this.connection.removeListener('drain', drainListener);
         });
       };
@@ -341,7 +341,7 @@ export default class Sync extends EventEmitter {
       });
   }
 
-  private _sendCommandWithLength(cmd: string, length: number): Connection {
+  private _sendCommandWithLength(cmd: string, length: number): boolean {
     if (cmd !== Protocol.DATA) {
       debug(cmd);
     }
@@ -351,7 +351,7 @@ export default class Sync extends EventEmitter {
     return this.connection.write(payload);
   }
 
-  private _sendCommandWithArg(cmd: string, arg: string): Connection {
+  private _sendCommandWithArg(cmd: string, arg: string): boolean {
     debug(`${cmd} ${arg}`);
     const arglen = Buffer.byteLength(arg, 'utf-8');
     const payload = Buffer.alloc(cmd.length + 4 + arglen);
