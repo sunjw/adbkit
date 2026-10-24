@@ -1,8 +1,8 @@
 import d from 'debug';
 import { EventEmitter } from 'events';
 import Packet from './packet';
-import Bluebird from 'bluebird';
 import Protocol from '../protocol';
+import { promiseTry } from '../promise';
 import Client from '../client';
 import Socket from './socket';
 import ReadableStream = NodeJS.ReadableStream;
@@ -63,35 +63,40 @@ export default class Service extends EventEmitter {
       // We may or may not have gotten here due to @socket ending, so write
       // may fail.
       this.socket.write(Packet.assemble(Packet.A_CLSE, localId, this.remoteId, null));
-    } catch (error) {}
-    // Let it go
+    } catch {
+      // Let it go
+    }
     this.transport = null;
     this.ended = true;
     this.emit('end');
     return this;
   }
 
-  public handle(packet: Packet): Bluebird<Service | boolean> {
-    return Bluebird.try<Service | boolean>(() => {
-      switch (packet.command) {
-        case Packet.A_OPEN:
-          return this._handleOpenPacket(packet);
-        case Packet.A_OKAY:
-          return this._handleOkayPacket(packet);
-        case Packet.A_WRTE:
-          return this._handleWritePacket(packet);
-        case Packet.A_CLSE:
-          return this._handleClosePacket(packet);
-        default:
-          throw new Error(`Unexpected packet ${packet.command}`);
-      }
-    }).catch((err) => {
+  public handle(packet: Packet): Promise<Service | boolean> {
+    return promiseTry(() => this._dispatch(packet)).catch((err) => {
+      // End first: without an 'error' listener the emit throws.
+      const ended = this.end();
       this.emit('error', err);
-      return this.end();
+      return ended;
     });
   }
 
-  private _handleOpenPacket(packet): Bluebird<boolean> {
+  private _dispatch(packet: Packet): Promise<Service | boolean> | Service | boolean {
+    switch (packet.command) {
+      case Packet.A_OPEN:
+        return this._handleOpenPacket(packet);
+      case Packet.A_OKAY:
+        return this._handleOkayPacket(packet);
+      case Packet.A_WRTE:
+        return this._handleWritePacket(packet);
+      case Packet.A_CLSE:
+        return this._handleClosePacket(packet);
+      default:
+        throw new Error(`Unexpected packet ${packet.command}`);
+    }
+  }
+
+  private _handleOpenPacket(packet): Promise<boolean> {
     debug('I:A_OPEN', packet);
     // With delayed acks, arg1 is how much the client lets us send before its first A_OKAY; 0 means it has them off.
     this.window = new SendWindow(this.socket.delayedAck && packet.arg1 > 0, packet.arg1);
@@ -123,7 +128,7 @@ export default class Service extends EventEmitter {
         });
       })
       .then(() => {
-        return new Bluebird<boolean>((resolve, reject) => {
+        return new Promise<boolean>((resolve, reject) => {
           this.transport.socket
             .on('readable', () => this._tryPush())
             .on('end', resolve)

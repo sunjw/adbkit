@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { EventEmitter } from 'events';
-import Bluebird from 'bluebird';
 import Parser from './parser';
+import { warnUnhandled } from './promise';
 import Command from './command';
 
 interface JdwpTrackerChangeSet {
@@ -18,7 +18,8 @@ interface JdwpTrackerChangeSet {
 export default class JdwpTracker extends EventEmitter {
   private pids = [];
   private pidMap = Object.create(null);
-  private reader: Bluebird<JdwpTracker | boolean>;
+  private reader: Promise<unknown>;
+  private ended = false;
 
   constructor(private command: Command<JdwpTracker>) {
     super();
@@ -26,18 +27,20 @@ export default class JdwpTracker extends EventEmitter {
     this.pids = [];
     this.pidMap = Object.create(null);
     this.reader = this.read()
-      .catch(Parser.PrematureEOFError, () => {
-        return this.emit('end');
-      })
-      .catch(Bluebird.CancellationError, () => {
-        this.command.connection.end();
-        return this.emit('end');
-      })
       .catch((err) => {
+        // The loop only stops on an error: the remote closed the connection
+        // (PrematureEOFError), end() cancelled the parser, or something broke.
         this.command.connection.end();
-        this.emit('error', err);
-        return this.emit('end');
-      });
+        if (err instanceof Parser.PrematureEOFError || err instanceof Parser.CancellationError) {
+          return this._emitEnd();
+        }
+        try {
+          this.emit('error', err);
+        } finally {
+          this._emitEnd();
+        }
+      })
+      .catch(warnUnhandled);
   }
 
   on(event: 'end', listener: () => void): this;
@@ -67,14 +70,19 @@ export default class JdwpTracker extends EventEmitter {
     return super.emit(event, ...args);
   }
 
-  read(): Bluebird<JdwpTracker> {
+  /**
+   * Reads pid lists until the connection closes or `end()` is called. Only
+   * settles by rejecting.
+   */
+  read(): Promise<JdwpTracker> {
     return this.command.parser.readValue().then((list) => {
       const pids = list.toString().split('\n');
       const maybeEmpty = pids.pop();
       if (maybeEmpty) {
         pids.push(maybeEmpty);
       }
-      return this.update(pids);
+      this.update(pids);
+      return this.read();
     });
   }
 
@@ -89,8 +97,10 @@ export default class JdwpTracker extends EventEmitter {
       if (!this.pidMap[pid]) {
         changeSet.added.push(pid);
         this.emit('add', pid);
-        newMap[pid] = pid;
       }
+      // Every current pid, not only the new ones; otherwise the next list
+      // reports the surviving pids as removed.
+      newMap[pid] = pid;
     }
     const ref = this.pids;
     for (let j = 0, len1 = ref.length; j < len1; j++) {
@@ -106,8 +116,26 @@ export default class JdwpTracker extends EventEmitter {
     return this;
   }
 
+  /**
+   * Stops tracking: cancels the pending read, ends the connection and
+   * emits 'end'.
+   */
   end(): JdwpTracker {
-    this.reader.cancel();
+    if (!this.ended) {
+      // Tears down the whole connection, which belongs to this tracker. The
+      // cancel is sticky, so it also stops the loop when called from a
+      // 'changeSet', 'add' or 'remove' listener, between two reads. The loop
+      // then ends the connection and emits 'end'.
+      this.command.parser.cancel();
+    }
     return this;
+  }
+
+  private _emitEnd(): boolean {
+    if (this.ended) {
+      return false;
+    }
+    this.ended = true;
+    return this.emit('end');
   }
 }
