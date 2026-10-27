@@ -10,9 +10,9 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 
 describe('package exports', function () {
   it('should resolve the entry point to the client factory', function () {
-    const adb = require('@devicefarmer/adbkit');
+    const adb = require(pkg.name);
     expect(adb.default.createClient).to.be.a('function');
-    expect(adb.Parser).to.equal(require('@devicefarmer/adbkit/adb/parser').default);
+    expect(adb.Parser).to.equal(require(`${pkg.name}/adb/parser`).default);
   });
   for (const [subpath, name] of [
     ['adb/parser', 'Parser'],
@@ -20,10 +20,10 @@ describe('package exports', function () {
     ['adb/tcpusb/server', 'Server'],
   ]) {
     it(`should export ${subpath} under its short and its dist path`, function () {
-      const short = require(`@devicefarmer/adbkit/${subpath}`).default;
+      const short = require(`${pkg.name}/${subpath}`).default;
       expect(short).to.be.a('function');
       expect(short.name).to.equal(name);
-      expect(require(`@devicefarmer/adbkit/dist/src/${subpath}.js`).default).to.equal(short);
+      expect(require(`${pkg.name}/dist/src/${subpath}.js`).default).to.equal(short);
     });
   }
   it('should point every types condition at an emitted declaration', function () {
@@ -36,6 +36,6 @@ describe('package exports', function () {
     }
   });
   it('should not expose unlisted internals', function () {
-    expect(() => require('@devicefarmer/adbkit/dist/src/adb/sync.js')).to.throw(/not defined by "exports"/);
+    expect(() => require(`${pkg.name}/dist/src/adb/sync.js`)).to.throw(/not defined by "exports"/);
   });
 });
