@@ -1,6 +1,5 @@
 import Command from '../../command';
 import Protocol from '../../protocol';
-import Bluebird from 'bluebird';
 
 // Possible replies:
 // "No such device 192.168.2.2:5555"
@@ -8,10 +7,10 @@ import Bluebird from 'bluebird';
 // "disconnected 192.168.2.2:5555"
 
 const RE_OK = /^$/;
-const RE_DISC = /^disconnected.*$/
+const RE_DISC = /^disconnected.*$/;
 
 export default class HostDisconnectCommand extends Command<string> {
-  execute(host: string, port: number): Bluebird<string> {
+  execute(host: string, port: number): Promise<string> {
     this._send(`host:disconnect:${host}:${port}`);
     return this.parser.readAscii(4).then((reply) => {
       switch (reply) {

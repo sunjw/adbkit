@@ -1,7 +1,5 @@
-/* eslint-disable prefer-const */
 import * as Fs from 'fs';
 import * as Path from 'path';
-import Bluebird from 'bluebird';
 import { EventEmitter } from 'events';
 import d from 'debug';
 import Parser from './parser';
@@ -13,6 +11,7 @@ import PullTransfer from './sync/pulltransfer';
 import Connection from './connection';
 import { Callback } from '../Callback';
 import { Readable } from 'stream';
+import { nodeify, warnUnhandled } from './promise';
 
 const TEMP_PATH = '/data/local/tmp';
 const DEFAULT_CHMOD = 0o644;
@@ -38,59 +37,55 @@ export default class Sync extends EventEmitter {
     this.parser = this.connection.parser as Parser;
   }
 
-  public stat(path: string, callback?: Callback<Stats>): Bluebird<Stats> {
+  public stat(path: string, callback?: Callback<Stats>): Promise<Stats> {
     this._sendCommandWithArg(Protocol.STAT, path);
-    return this.parser
-      .readAscii(4)
-      .then((reply) => {
-        switch (reply) {
-          case Protocol.STAT:
-            return this.parser.readBytes(12).then((stat) => {
-              const mode = stat.readUInt32LE(0);
-              const size = stat.readUInt32LE(4);
-              const mtime = stat.readUInt32LE(8);
-              if (mode === 0) {
-                return this._enoent(path);
-              } else {
-                return new Stats(mode, BigInt(size), mtime);
-              }
-            });
-          case Protocol.FAIL:
-            return this._readError();
-          default:
-            return this.parser.unexpected(reply, 'STAT or FAIL');
-        }
-      })
-      .nodeify(callback);
+    const stats = this.parser.readAscii(4).then((reply) => {
+      switch (reply) {
+        case Protocol.STAT:
+          return this.parser.readBytes(12).then((stat) => {
+            const mode = stat.readUInt32LE(0);
+            const size = stat.readUInt32LE(4);
+            const mtime = stat.readUInt32LE(8);
+            if (mode === 0) {
+              return this._enoent(path);
+            } else {
+              return new Stats(mode, BigInt(size), mtime);
+            }
+          });
+        case Protocol.FAIL:
+          return this._readError();
+        default:
+          return this.parser.unexpected(reply, 'STAT or FAIL');
+      }
+    });
+    return nodeify(stats, callback);
   }
 
-  public sta2(path: string, callback?: Callback<Stats>): Bluebird<Stats> {
+  public sta2(path: string, callback?: Callback<Stats>): Promise<Stats> {
     this._sendCommandWithArg(Protocol.STA2, path);
-    return this.parser
-      .readAscii(4)
-      .then((reply) => {
-        switch (reply) {
-          case Protocol.STA2:
-            return this.parser.readBytes(68).then((stat) => {
-              const mode = stat.readUInt32LE(20);
-              const size = stat.readBigUInt64LE(36);
-              const mtime = stat.readBigUInt64LE(52);
-              if (mode === 0) {
-                return this._enoent(path);
-              } else {
-                return new Stats(mode, size, Number(mtime));
-              }
-            });
-          case Protocol.FAIL:
-            return this._readError();
-          default:
-            return this.parser.unexpected(reply, 'STA2 or FAIL');
-        }
-      })
-      .nodeify(callback);
+    const stats = this.parser.readAscii(4).then((reply) => {
+      switch (reply) {
+        case Protocol.STA2:
+          return this.parser.readBytes(68).then((stat) => {
+            const mode = stat.readUInt32LE(20);
+            const size = stat.readBigUInt64LE(36);
+            const mtime = stat.readBigUInt64LE(52);
+            if (mode === 0) {
+              return this._enoent(path);
+            } else {
+              return new Stats(mode, size, Number(mtime));
+            }
+          });
+        case Protocol.FAIL:
+          return this._readError();
+        default:
+          return this.parser.unexpected(reply, 'STA2 or FAIL');
+      }
+    });
+    return nodeify(stats, callback);
   }
 
-  public readdir(path: string, callback?: Callback<Entry[]>): Bluebird<Entry[]> {
+  public readdir(path: string, callback?: Callback<Entry[]>): Promise<Entry[]> {
     const files: Entry[] = [];
     const readNext = () => {
       return this.parser.readAscii(4).then((reply) => {
@@ -122,7 +117,7 @@ export default class Sync extends EventEmitter {
       });
     };
     this._sendCommandWithArg(Protocol.LIST, path);
-    return readNext().nodeify(callback);
+    return nodeify(readNext(), callback);
   }
 
   public push(contents: string | Readable, path: string, mode?: number): PushTransfer {
@@ -134,7 +129,9 @@ export default class Sync extends EventEmitter {
   }
 
   pushFile(file: string, path: string, mode = DEFAULT_CHMOD): PushTransfer {
-    mode || (mode = DEFAULT_CHMOD);
+    if (!mode) {
+      mode = DEFAULT_CHMOD;
+    }
     return this.pushStream(Fs.createReadStream(file), path, mode);
   }
 
@@ -160,75 +157,97 @@ export default class Sync extends EventEmitter {
 
   private _writeData(stream: Readable, timeStamp: number): PushTransfer {
     const transfer = new PushTransfer();
+    // Cancellation is scoped to this transfer: the reply read gets its own
+    // AbortSignal and the writer can be rejected from the outside, both with
+    // `cancelled`, so a cancel never affects other operations on this Sync.
+    // Replaces bluebird's writer.cancel() and reader.cancel().
+    const cancelled = new Parser.CancellationError();
+    const reader = new AbortController();
+    let stopWriter: (err: Error) => void = () => undefined;
     const writeData = () => {
       let readableListener: () => void;
       let connErrorListener: (err: Error) => void;
       let endListener: () => void;
       let errorListener: (err: Error) => void;
+      let drainListener: (() => void) | undefined;
+      let finished = false;
 
-      const resolver = Bluebird.defer();
-      const waitForDrain = () => {
-        const drainResolver = Bluebird.defer();
-        const drainListener = () => {
-          drainResolver.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const fail = (err: Error) => {
+          finished = true;
+          reject(err);
         };
-        this.connection.on('drain', drainListener);
-        return drainResolver.promise.finally(() => {
-          return this.connection.removeListener('drain', drainListener);
-        });
-      };
-      const track = () => transfer.pop();
-      let draining = false;
-      const writeNext = () => {
-        if (draining) {
-          return;
-        }
-        let chunk: Buffer;
-        while ((chunk = stream.read(DATA_MAX_LENGTH) || stream.read())) {
-          this._sendCommandWithLength(Protocol.DATA, chunk.length);
-          transfer.push(chunk.length);
-          if (!this.connection.write(chunk, track)) {
-            draining = true;
-            waitForDrain().then(() => {
-              draining = false;
-              writeNext();
-            });
+        stopWriter = fail;
+        endListener = () => {
+          if (finished) {
             return;
           }
-        }
-        // Ran out of buffered data; the next 'readable' will resume the pump.
-      };
-      endListener = () => {
-        this._sendCommandWithLength(Protocol.DONE, timeStamp);
-        resolver.resolve();
-      };
-      stream.on('end', endListener);
-      readableListener = () => writeNext();
-      stream.on('readable', readableListener);
-      errorListener = (err) => resolver.reject(err);
-      stream.on('error', errorListener);
-      connErrorListener = (err: Error) => {
-        stream.destroy(err);
-        this.connection.end();
-        resolver.reject(err);
-      };
-      this.connection.on('error', connErrorListener);
-      return resolver.promise.finally(() => {
+          this._sendCommandWithLength(Protocol.DONE, timeStamp);
+          finished = true;
+          resolve();
+        };
+        stream.on('end', endListener);
+        const track = () => transfer.pop();
+        // Pumps in a loop and resumes from the 'drain' event instead of chaining
+        // promises, so memory doesn't grow with the size of the transfer.
+        let draining = false;
+        const writeNext = () => {
+          if (draining || finished) {
+            return;
+          }
+          try {
+            let chunk: Buffer;
+            while ((chunk = stream.read(DATA_MAX_LENGTH) || stream.read())) {
+              this._sendCommandWithLength(Protocol.DATA, chunk.length);
+              transfer.push(chunk.length);
+              if (!this.connection.write(chunk, track)) {
+                draining = true;
+                drainListener = () => {
+                  this.connection.removeListener('drain', drainListener);
+                  drainListener = undefined;
+                  draining = false;
+                  writeNext();
+                };
+                this.connection.on('drain', drainListener);
+                return;
+              }
+            }
+            // Ran out of buffered data; the next 'readable' will resume the pump.
+          } catch (err) {
+            fail(err as Error);
+          }
+        };
+        readableListener = () => writeNext();
+        stream.on('readable', readableListener);
+        errorListener = (err) => fail(err);
+        stream.on('error', errorListener);
+        connErrorListener = (err: Error) => {
+          stream.destroy(err);
+          this.connection.end();
+          fail(err);
+        };
+        this.connection.on('error', connErrorListener);
+      }).finally(() => {
+        finished = true;
         stream.removeListener('end', endListener);
         stream.removeListener('readable', readableListener);
         stream.removeListener('error', errorListener);
         this.connection.removeListener('error', connErrorListener);
+        if (drainListener) {
+          this.connection.removeListener('drain', drainListener);
+        }
       });
     };
     const readReply = () => {
-      return this.parser.readAscii(4).then((reply) => {
+      const signal = reader.signal;
+      return this.parser.readAscii(4, signal).then((reply) => {
         switch (reply) {
           case Protocol.OKAY:
-            return this.parser.readBytes(4).then(function () {
+            return this.parser.readBytes(4, signal).then(function () {
               return true;
             });
           case Protocol.FAIL:
-            return this._readError();
+            return this._readError(signal);
           default:
             return this.parser.unexpected(reply, 'OKAY or FAIL');
         }
@@ -238,104 +257,109 @@ export default class Sync extends EventEmitter {
     // writer-reader arrangement right now, it's not immediately obvious
     // that the code is correct and it may or may not have some failing
     // edge cases. Refactor pending.
-    const writer = writeData()
-      // .cancellable()
-      .catch(Bluebird.CancellationError, () => {
-        return this.connection.end();
-      })
-      .catch(function (err) {
-        transfer.emit('error', err);
-        return reader.cancel();
-      });
-    const reader = readReply()
-      .catch(Bluebird.CancellationError, () => true)
+    // Clean up before emitting 'error': without a listener the emit throws.
+    writeData()
       .catch((err) => {
+        if (err === cancelled) {
+          return;
+        }
+        reader.abort(cancelled);
         transfer.emit('error', err);
-        return writer.cancel();
+      })
+      .catch(warnUnhandled);
+    readReply()
+      .catch((err) => {
+        if (err === cancelled) {
+          return true;
+        }
+        stopWriter(cancelled);
+        transfer.emit('error', err);
       })
       .finally(() => {
+        transfer.removeListener('cancel', cancelListener);
         return transfer.end();
-      });
-    transfer.on('cancel', () => {
-      writer.cancel();
-      reader.cancel();
-    });
+      })
+      .catch(warnUnhandled);
+    const cancelListener = () => {
+      stopWriter(cancelled);
+      reader.abort(cancelled);
+      // Part of the file may have been sent, so the protocol state is
+      // unknown; the connection can't be reused.
+      this.connection.end();
+    };
+    transfer.on('cancel', cancelListener);
     return transfer;
   }
 
   private _readData(): PullTransfer {
     const transfer = new PullTransfer();
+    // Scoped to this transfer, like in _writeData().
+    const cancelled = new Parser.CancellationError();
+    const reader = new AbortController();
+    const signal = reader.signal;
     const readEnd = (afterEnd?) => {
       transfer.removeListener('cancel', cancelListener);
-      let retEnd = transfer.end();
+      const retEnd = transfer.end();
       if (afterEnd) {
         return afterEnd();
       } else {
         return retEnd;
       }
     };
-    const reader = new Bluebird<void>((resolve, reject, onCancel) => {
-      let cancelled = false;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let current: Bluebird<any> | null = null;
-      onCancel(() => {
-        cancelled = true;
-        if (current) {
-          current.cancel();
+    // A loop rather than a recursive promise chain, so memory doesn't grow
+    // with the number of DATA chunks in the transfer.
+    const readLoop = async (): Promise<void> => {
+      for (;;) {
+        const reply = await this.parser.readAscii(4, signal);
+        switch (reply) {
+          case Protocol.DATA: {
+            const lengthData = await this.parser.readBytes(4, signal);
+            const length = lengthData.readUInt32LE(0);
+            await this.parser.readByteFlow(length, transfer, signal);
+            break;
+          }
+          case Protocol.DONE:
+            await this.parser.readBytes(4, signal);
+            readEnd();
+            return;
+          case Protocol.FAIL:
+            await readEnd(() => {
+              return this._readError(signal);
+            });
+            return;
+          default:
+            await readEnd(() => {
+              return this.parser.unexpected(reply, 'DATA, DONE or FAIL');
+            });
+            return;
         }
-      });
-      const step = (): void => {
-        if (cancelled) {
+      }
+    };
+    readLoop()
+      .catch((err: Error) => {
+        if (err === cancelled) {
+          // The protocol state is unknown mid-transfer, so the connection
+          // can't be reused. End the transfer too, so pipes from it finish.
+          this.connection.end();
+          readEnd();
           return;
         }
-        current = this.parser.readAscii(4).then((reply) => {
-          switch (reply) {
-            case Protocol.DATA:
-              return this.parser.readBytes(4).then((lengthData) => {
-                const length = lengthData.readUInt32LE(0);
-                // Resolve to `true` to signal "keep reading".
-                return this.parser.readByteFlow(length, transfer).then(() => true);
-              });
-            case Protocol.DONE:
-              return this.parser.readBytes(4).then(function () {
-                readEnd();
-                // Resolve to `false` to signal "stop".
-                return false;
-              });
-            case Protocol.FAIL:
-              return readEnd(() => {
-                return this._readError();
-              });
-            default:
-              return readEnd(() => {
-                return this.parser.unexpected(reply, 'DATA, DONE or FAIL');
-              });
-          }
-        });
-        current.then((again) => {
-          if (again) {
-            step();
-          } else {
-            resolve();
-          }
-        }, reject);
-      };
-      step();
-    })
-      .catch(Bluebird.CancellationError, () => this.connection.end())
-      .catch((err: Error) => transfer.emit('error', err));
-    const cancelListener = () => reader.cancel();
+        transfer.removeListener('cancel', cancelListener);
+        transfer.emit('error', err);
+      })
+      .catch(warnUnhandled);
+    const cancelListener = () => reader.abort(cancelled);
     transfer.on('cancel', cancelListener);
     return transfer;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _readError(): Bluebird<any> {
+  private _readError(signal?: AbortSignal): Promise<any> {
     return this.parser
-      .readBytes(4)
+      .readBytes(4, signal)
       .then((length: Buffer) => {
-        return this.parser.readBytes(length.readUInt32LE(0)).then((buf: Buffer) => {
-          return Bluebird.reject(new Parser.FailError(buf.toString()));
+        return this.parser.readBytes(length.readUInt32LE(0), signal).then((buf: Buffer) => {
+          throw new Parser.FailError(buf.toString());
         });
       })
       .finally(() => {
@@ -367,11 +391,11 @@ export default class Sync extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private _enoent(path: string): Bluebird<any> {
+  private _enoent(path: string): Promise<any> {
     const err: ENOENT = new Error(`ENOENT, no such file or directory '${path}'`) as ENOENT;
     err.errno = 34;
     err.code = 'ENOENT';
     err.path = path;
-    return Bluebird.reject(err);
+    return Promise.reject(err);
   }
 }

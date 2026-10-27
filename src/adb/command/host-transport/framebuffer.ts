@@ -6,14 +6,13 @@ import Command from '../../command';
 import { Readable } from 'stream';
 import FramebufferMeta, { ColorFormat } from '../../../FramebufferMeta';
 import FramebufferStreamWithMeta from '../../../FramebufferStreamWithMeta';
-import Bluebird from 'bluebird';
 
 const debug = d('adb:command:framebuffer');
 
 // FIXME(intentional any): not "any" will break it all
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default class FrameBufferCommand extends Command<any> {
-  execute(format: string): Bluebird<FramebufferStreamWithMeta> {
+  execute(format: string): Promise<FramebufferStreamWithMeta> {
     this._send('framebuffer:');
     return this.parser.readAscii(4).then((reply) => {
       switch (reply) {
@@ -46,12 +45,13 @@ export default class FrameBufferCommand extends Command<any> {
       case 'rgb':
       case 'rgba':
         break;
-      default:
+      default: {
         // Known to be supported by GraphicsMagick
         debug(`Silently transforming '${meta.format}' into 'rgb' for \`gm\``);
         const transform = new RgbTransform(meta);
         meta.format = 'rgb';
         raw = this.parser.raw().pipe(transform);
+      }
     }
     const proc = spawn('gm', ['convert', '-size', `${meta.width}x${meta.height}`, `${meta.format}:-`, `${format}:-`]);
     if (raw) {
