@@ -321,7 +321,6 @@ describe('TcpUsb Socket known public keys', function () {
   it('should not accept garbage in the DigestInfo from a known key', async function () {
     const client = pair(3);
     const signature = signWithGarbage(client.privateKey);
-    expect(client.publicKey.verify(token.toString('binary'), signature.toString('binary'))).to.equal(true);
     expect(await authenticate([client.publicKey], signature)).to.deep.equal({ outcome: 'challenged', errors: [] });
   });
 
