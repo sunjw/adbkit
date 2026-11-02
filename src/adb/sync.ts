@@ -11,6 +11,7 @@ import PullTransfer from './sync/pulltransfer';
 import Connection from './connection';
 import { Callback } from '../Callback';
 import { Readable } from 'stream';
+import { Socket } from 'net';
 import { nodeify, warnUnhandled } from './promise';
 
 const TEMP_PATH = '/data/local/tmp';
@@ -169,7 +170,8 @@ export default class Sync extends EventEmitter {
       let connErrorListener: (err: Error) => void;
       let endListener: () => void;
       let errorListener: (err: Error) => void;
-      let drainListener: (() => void) | undefined;
+      // Ends a pending wait for 'drain' and removes its listeners.
+      let stopWaitingForDrain: (() => void) | undefined;
       let finished = false;
 
       return new Promise<void>((resolve, reject) => {
@@ -187,6 +189,37 @@ export default class Sync extends EventEmitter {
           resolve();
         };
         stream.on('end', endListener);
+        // Connection.write() returns the connection, not socket.write()'s
+        // result, so ask the socket itself whether its buffer is full.
+        // Listens on the socket because the connection only forwards 'drain'
+        // from connect(). No 'error' listener: Connection forwards socket
+        // errors only while it is the sole listener, and connErrorListener
+        // handles them. 'close' always follows an error.
+        const waitForDrain = (socket: Socket) => {
+          return new Promise<void>((drained, closed) => {
+            if (socket.destroyed) {
+              closed(new Error('Connection closed while pushing'));
+              return;
+            }
+            const stop = () => {
+              socket.removeListener('drain', onDrain);
+              socket.removeListener('close', onClose);
+              stopWaitingForDrain = undefined;
+            };
+            const onDrain = () => {
+              stop();
+              drained();
+            };
+            const onClose = () => {
+              stop();
+              closed(new Error('Connection closed while pushing'));
+            };
+            socket.on('drain', onDrain);
+            socket.on('close', onClose);
+            // On fail or cancel, settle so the writer chain can see `finished`.
+            stopWaitingForDrain = onDrain;
+          });
+        };
         const track = () => transfer.pop();
         // Pumps in a loop and resumes from the 'drain' event instead of chaining
         // promises, so memory doesn't grow with the size of the transfer.
@@ -196,23 +229,27 @@ export default class Sync extends EventEmitter {
             return;
           }
           try {
-            let chunk: Buffer;
-            while ((chunk = stream.read(DATA_MAX_LENGTH) || stream.read())) {
-              this._sendCommandWithLength(Protocol.DATA, chunk.length);
-              transfer.push(chunk.length);
-              if (!this.connection.write(chunk, track)) {
+            // A mocked Connection may not have a socket.
+            const socket: Socket | undefined = this.connection.socket;
+            // Check before reading, the SEND and DATA headers count too.
+            while (true) {
+              if (socket?.writableNeedDrain) {
                 draining = true;
-                drainListener = () => {
-                  this.connection.removeListener('drain', drainListener);
-                  drainListener = undefined;
+                waitForDrain(socket).then(() => {
                   draining = false;
                   writeNext();
-                };
-                this.connection.on('drain', drainListener);
+                }, fail);
                 return;
               }
+              const chunk: Buffer | null = stream.read(DATA_MAX_LENGTH) || stream.read();
+              if (!chunk) {
+                // Ran out of buffered data; the next 'readable' will resume the pump.
+                return;
+              }
+              this._sendCommandWithLength(Protocol.DATA, chunk.length);
+              transfer.push(chunk.length);
+              this.connection.write(chunk, track);
             }
-            // Ran out of buffered data; the next 'readable' will resume the pump.
           } catch (err) {
             fail(err as Error);
           }
@@ -233,9 +270,7 @@ export default class Sync extends EventEmitter {
         stream.removeListener('readable', readableListener);
         stream.removeListener('error', errorListener);
         this.connection.removeListener('error', connErrorListener);
-        if (drainListener) {
-          this.connection.removeListener('drain', drainListener);
-        }
+        stopWaitingForDrain?.();
       });
     };
     const readReply = () => {
