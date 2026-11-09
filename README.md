@@ -15,8 +15,6 @@ Please note that although it may happen at some point, **this project is NOT an 
 
 When targeting a remote host, starting the server is entirely your responsibility.
 
-Alternatively, you may want to consider using the Chrome [ADB][chrome-adb] extension, as it includes the ADB server and can be started/stopped quite easily.
-
 For Linux users, adb need `plugdev` group acess, So you may need to add your current user to `plugdev` group.
 `sudo usermod -a -G plugdev $USER`
 
@@ -28,6 +26,16 @@ Install via NPM:
 npm install --save @devicefarmer/adbkit
 ```
 
+Import the `Adb` named export, which works from both ES modules and CommonJS:
+
+```typescript
+import { Adb } from '@devicefarmer/adbkit';
+// or, in CommonJS:
+const { Adb } = require('@devicefarmer/adbkit');
+```
+
+Avoid the default import (`import Adb from '@devicefarmer/adbkit'`). The package is CommonJS, so the default import is `Adb` only in TypeScript compiled to CommonJS or in a bundler. In Node.js ES modules it is the whole module object, and `Adb.createClient` is `undefined`.
+
 We use [debug][node-debug], and our debug namespace is `adb`. Some of the dependencies may provide debug output of their own. To see the debug output, set the `DEBUG` environment variable. For example, run your program with `DEBUG=adb:* node app.js`.
 
 ### Examples
@@ -37,7 +45,7 @@ The examples may be a bit verbose, but that's because we're trying to keep them 
 #### Checking for NFC support
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 
 const client = Adb.createClient();
 
@@ -61,7 +69,7 @@ const test = async () => {
 #### Installing an APK
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 
 const client = Adb.createClient();
 const apk = 'vendor/app.apk';
@@ -80,7 +88,7 @@ const test = async () => {
 #### Tracking devices
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 
 const client = Adb.createClient();
 const test = async () => {
@@ -98,8 +106,9 @@ const test = async () => {
 #### Pulling a file from all connected devices
 
 ```typescript
+import { pipeline } from 'stream/promises';
 import fs from 'fs';
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 const client = Adb.createClient();
 
 const test = async () => {
@@ -107,19 +116,16 @@ const test = async () => {
         const devices = await client.listDevices();
         await Promise.all(
             devices.map(async (device) => {
-                const transfer = await client.pull(device.id, '/system/build.prop');
+                const transfer = await client.getDevice(device.id).pull('/system/build.prop');
                 const fn = `/tmp/${device.id}.build.prop`;
-                await new Promise((resolve, reject) => {
-                    transfer.on('progress', (stats) =>
-                        console.log(`[${device.id}] Pulled ${stats.bytesTransferred} bytes so far`),
-                    );
-                    transfer.on('end', () => {
-                        console.log(`[${device.id}] Pull complete`);
-                        resolve(device.id);
-                    });
-                    transfer.on('error', reject);
-                    transfer.pipe(fs.createWriteStream(fn));
-                });
+                transfer.on('progress', (stats) =>
+                    console.log(`[${device.id}] Pulled ${stats.bytesTransferred} bytes so far`),
+                );
+                // Rejects if the pull fails (the file may then be incomplete),
+                // and closes the file either way. transfer.pipe() would leave
+                // it open on an error.
+                await pipeline(transfer, fs.createWriteStream(fn));
+                console.log(`[${device.id}] Pull complete`);
             }),
         );
         console.log('Done pulling /system/build.prop from all connected devices');
@@ -132,7 +138,7 @@ const test = async () => {
 #### Pushing a file to all connected devices
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 const client = Adb.createClient();
 
 const test = async () => {
@@ -140,13 +146,14 @@ const test = async () => {
         const devices = await client.listDevices();
         await Promise.all(
             devices.map(async (device) => {
-                const transfer = await client.push(device.id, 'temp/foo.txt', '/data/local/tmp/foo.txt');
+                const transfer = await client.getDevice(device.id).push('temp/foo.txt', '/data/local/tmp/foo.txt');
+                // A push ends with either 'end' or 'error', never both.
                 await new Promise(function (resolve, reject) {
                     transfer.on('progress', (stats) =>
                         console.log(`[${device.id}] Pushed ${stats.bytesTransferred} bytes so far`),
                     );
                     transfer.on('end', () => {
-                        console.log('[${device.id}] Push complete');
+                        console.log(`[${device.id}] Push complete`);
                         resolve();
                     });
                     transfer.on('error', reject);
@@ -163,7 +170,7 @@ const test = async () => {
 #### List files in a folder
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 const client = Adb.createClient();
 
 const test = async () => {
@@ -171,7 +178,7 @@ const test = async () => {
         const devices = await client.listDevices();
         await Promise.all(
             devices.map(async (device) => {
-                const files = await client.readdir(device.id, '/sdcard');
+                const files = await client.getDevice(device.id).readdir('/sdcard');
                 // Synchronous, so we don't have to care about returning at the
                 // right time
                 files.forEach((file) => {
@@ -258,7 +265,7 @@ Connects to the given device, which must have its ADB daemon running in tcp mode
 Note: be careful with using `client.listDevices()` together with `client.tcpip()` and other similar methods that modify the connection with ADB. You might have the same device twice in your device list (i.e. one device connected via both USB and TCP), which can cause havoc if run simultaneously.
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 const client = Adb.createClient();
 
 const test = async () => {
@@ -314,11 +321,15 @@ Gets the list of currently connected devices and emulators.
 
 #### client.listDevicesWithPaths()
 
-Like `client.listDevices()`, but includes the "path" of every device.
+Like `client.listDevices()`, but includes the "path" and the other fields of `adb devices -l`. adb prints each field only when it knows it, in no fixed order; a missing one is `undefined`.
 -   Returns: `Promise<devices>` An array of device objects. The device objects are plain JavaScript objects with the following properties:
     -   **id** See `client.listDevices()`.
     -   **type** See `client.listDevices()`.
-    -   **path** The device path. This can be something like `usb:FD120000` for real devices.
+    -   **path** The device path. This can be something like `usb:FD120000` or `usb:1-1` for real devices. `undefined` for emulators, network devices and on Windows.
+    -   **product** The product name, such as `sdk_gphone64_arm64`.
+    -   **model** The model, such as `Pixel_7`.
+    -   **device** The device name, such as `emu64a`.
+    -   **transportId** The transport ID, as a string.
 
 
 #### client.trackDevices()
@@ -516,7 +527,7 @@ Note that if the call seems to stall, you may have to accept a dialog on the pho
 This example requires the [request](https://www.npmjs.org/package/request) module. It also doesn't do any error handling (404 responses, timeouts, invalid URLs etc).
 
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 import request from 'request';
 import { Readable } from 'stream';
 
@@ -702,14 +713,15 @@ A convenience shortcut for `sync.readdir()`, mainly for one-off use cases. The c
 -   Returns: `Promise`
 -   Resolves with: See `sync.readdir()` for details.
 
-#### device.reboot()
+#### device.reboot([target])
 
-Reboots the device. Similar to `adb reboot`. Note that the method resolves when ADB reports that the device has been rebooted (i.e. the reboot command was successful), not when the device becomes available again.
+Reboots the device. Similar to `adb reboot [target]`. Note that the method resolves when ADB reports that the device has been rebooted (i.e. the reboot command was successful), not when the device becomes available again.
 
--   **callback(err)** Optional. Use this or the returned `Promise`.
-    -   **err** `null` when successful, `Error` otherwise.
+-   **target** Optional. What to reboot into, for example `'bootloader'`, `'recovery'`, `'sideload'` or `'fastboot'`. It's passed to the device as is (`reboot:<target>`), so what each target does depends on the device. Omit it for a normal reboot. If the device refuses the target, adbd keeps the connection open and the promise doesn't settle, just like `adb reboot <target>` doesn't return. On an Android emulator, for example, `'bootloader'` simply reboots back into Android, while `'recovery'` doesn't reboot at all, because the emulator has no `/misc` partition.
 -   Returns: `Promise`
 -   Resolves with: `true`
+
+`device.reboot()` doesn't take a callback. Anything other than a string, such as a function, is ignored and the device reboots normally.
 
 #### device.remount()
 
@@ -788,70 +800,65 @@ Runs a shell command on the device. Note that you'll be limited to the permissio
 
 * Read the output of an instantaneous command
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 
 const client = Adb.createClient();
 
-client
-    .listDevices()
-    .then(function (devices) {
-      return Promise.map(devices, function (device) {
-        const device = client.getDevice(device.id);
-          return (
-              device
-                  .shell('echo $RANDOM')
-                  // Use the readAll() utility to read all the content without
-                  // having to deal with the readable stream. `output` will be a Buffer
-                  // containing all the output.
-                  .then(adb.util.readAll)
-                  .then(function (output) {
-                      console.log('[%s] %s', device.id, output.toString().trim());
-                  })
-          );
-      });
-    })
-    .then(function () {
+const test = async () => {
+    try {
+        const devices = await client.listDevices();
+        await Promise.all(
+            devices.map(async (device) => {
+                const conn = await client.getDevice(device.id).shell('echo $RANDOM');
+                // Use the readAll() utility to read all the content without
+                // having to deal with the readable stream. `output` will be a Buffer
+                // containing all the output.
+                const output = await Adb.util.readAll(conn);
+                console.log('[%s] %s', device.id, output.toString().trim());
+            }),
+        );
         console.log('Done.');
-    })
-    .catch(function (err) {
+    } catch (err) {
         console.error('Something went wrong:', err.stack);
-    });
+    }
+};
 ```
 
 * Progressively read the output of a long-running command and terminate it
 ```typescript
-import Adb from '@devicefarmer/adbkit';
+import { Adb } from '@devicefarmer/adbkit';
 
 const client = Adb.createClient();
-client.listDevices()
-  .then(function(devices) {
-    return Promise.all(devices.map(function(device) {
-      const device = client.getDevice(device.id);
-      return device.shell('logcat') // logcat just for illustration,
-                                    // prefer client.openLogcat in real use 
-        .then(function(conn) {
-          var line = 0
-          conn.on('data', function(data) {
-            // here `ps` on the device shows the running logcat process
-            console.log(data.toString())
-            line += 1
-            // close the stream and the running process
-            // on the device will be gone, gracefully
-            if (line > 100) conn.end()
-          });
-          conn.on('close', function() {
-            // here `ps` on the device shows the logcat process is gone
-            console.log('100 lines read already, bye')
-          })
-        })
-    }))
-  })
-  .then(function() {
-    console.log('Done.')
-  })
-  .catch(function(err) {
-    console.error('Something went wrong:', err.stack)
-  })
+const test = async () => {
+    try {
+        const devices = await client.listDevices();
+        await Promise.all(
+            devices.map(async (device) => {
+                // logcat just for illustration, prefer device.openLogcat() in real use
+                const conn = await client.getDevice(device.id).shell('logcat');
+                let chunks = 0;
+                await new Promise((resolve) => {
+                    conn.on('data', (data) => {
+                        // here `ps` on the device shows the running logcat process
+                        console.log(data.toString());
+                        chunks += 1;
+                        // close the stream and the running process
+                        // on the device will be gone, gracefully
+                        if (chunks === 100) conn.end();
+                    });
+                    conn.on('close', () => {
+                        // here `ps` on the device shows the logcat process is gone
+                        console.log(`[${device.id}] 100 chunks read already, bye`);
+                        resolve();
+                    });
+                });
+            }),
+        );
+        console.log('Done.');
+    } catch (err) {
+        console.error('Something went wrong:', err.stack);
+    }
+};
 ```
 
 
@@ -1088,9 +1095,10 @@ List of events:
 -   **progress** **(stats)** Emitted when a chunk has been flushed to the ADB connection.
     -   **stats** An object with the following stats about the transfer:
         -   **bytesTransferred** The number of bytes transferred so far.
--   **error** **(err)** Emitted on error.
+-   **error** **(err)** Emitted on error, for example when the device can't write the file. It's followed by `close`, not by `end`, so wait for `end` or `error`.
     -   **err** An `Error`.
--   **end** Emitted when the transfer has successfully completed.
+-   **end** Emitted when the transfer has successfully completed, or was cancelled.
+-   **close** Emitted last, after `end` or `error`.
 
 #### pushTransfer.cancel()
 
@@ -1100,16 +1108,18 @@ Cancels the transfer by ending both the stream that is being pushed and the sync
 
 ### PullTransfer
 
-`PullTransfer` is a [`Stream`][node-stream]. Use [`fs.createWriteStream()`][node-fs] to pipe the stream to a file if necessary.
+`PullTransfer` is a [`Stream`][node-stream]. To save it to a file, use [`stream.pipeline()`][node-stream] with [`fs.createWriteStream()`][node-fs], as in the example above. `pipeline()` reports a failed pull and closes the file; `transfer.pipe()` does neither.
 
 List of events:
 
 -   **progress** **(stats)** Emitted when a new chunk is received.
     -   **stats** An object with the following stats about the transfer:
         -   **bytesTransferred** The number of bytes transferred so far.
--   **error** **(err)** Emitted on error.
+-   **error** **(err)** Emitted on error, for example when the file can't be read. It's followed by `close`, not by `end`, so wait for `end` or `error`, or use `stream.promises.finished()` or `pipeline()`.
     -   **err** An `Error`.
--   **end** Emitted when the transfer has successfully completed.
+-   **end** Emitted when the transfer has successfully completed, or was cancelled.
+
+Destroying the transfer before it ends (`transfer.destroy()`) stops the pull and closes the sync connection without an `error`.
 
 #### pullTransfer.cancel()
 
@@ -1164,7 +1174,6 @@ Test coverage was also massively improved, although we've still got ways to go.
     -   [SERVICES.TXT][adb-services] (ADB socket protocol)
 -   [Android ADB Protocols][adb-protocols] (a blog post explaining the protocol)
 -   [adb.js][adb-js] (another Node.js ADB implementation)
--   [ADB Chrome extension][chrome-adb]
 
 ## Releasing
 
@@ -1193,7 +1202,6 @@ Copyright © The OpenSTF Project. All Rights Reserved.
 [adb-services]: https://github.com/android/platform_system_core/blob/master/adb/SERVICES.TXT
 [adb-protocols]: http://blogs.kgsoft.co.uk/2013_03_15_prg.htm
 [file_sync_service.h]: https://github.com/android/platform_system_core/blob/master/adb/file_sync_service.h
-[chrome-adb]: https://chrome.google.com/webstore/detail/adb/dpngiggdglpdnjdoaefidgiigpemgage
 [node-debug]: https://npmjs.org/package/debug
 [net-connect]: http://nodejs.org/api/net.html#net_net_connect_options_connectionlistener
 [node-events]: http://nodejs.org/api/events.html
