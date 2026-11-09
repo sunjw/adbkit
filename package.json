@@ -1,6 +1,6 @@
 {
   "name": "@sunjw8888/adbkit",
-  "version": "4.1.24",
+  "version": "4.1.25",
   "description": "A Typescript client for the Android Debug Bridge.",
   "keywords": [
     "adb",
