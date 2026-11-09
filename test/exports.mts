@@ -17,8 +17,8 @@ describe('package exports', function () {
   it('should give ES modules the named exports, like the README imports them', async function () {
     // Node detects a CommonJS module's named exports from its source. On Node
     // 22 it didn't recognize the getters TypeScript emits for re-exports.
-    const esm = await import('@devicefarmer/adbkit');
-    const cjs = require('@devicefarmer/adbkit');
+    const esm = await import(pkg.name);
+    const cjs = require(pkg.name);
     expect(esm.Adb.createClient).to.be.a('function');
     for (const name of ['Adb', 'Parser', 'Client', 'DeviceClient', 'ShellCommand', 'KeyCodes']) {
       expect(esm[name], name).to.equal(cjs[name]);
